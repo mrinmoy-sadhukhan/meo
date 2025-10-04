@@ -251,17 +251,17 @@ class DETRTrainer:
 
         for epoch in range(self.epochs):
             train_loader = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
-            for input_, (tgt_cl, tgt_bbox, tgt_mask, _) in train_loader:
-                # Move data to device
-                input_ = input_.to(self.device)
-                tgt_cl = tgt_cl.to(self.device)
-                tgt_bbox = tgt_bbox.to(self.device)
-                tgt_mask = tgt_mask.bool().to(self.device)
 
-                # Run inference
+            losses, class_losses, box_losses, giou_losses = [], [], [], []
+
+            for input_, (tgt_cl, tgt_bbox, tgt_mask, _) in train_loader:
+                input_ = input_.to(self.device, non_blocking=True)
+                tgt_cl = tgt_cl.to(self.device, non_blocking=True)
+                tgt_bbox = tgt_bbox.to(self.device, non_blocking=True)
+                tgt_mask = tgt_mask.bool().to(self.device, non_blocking=True)
+
                 class_preds, bbox_preds = self.model(input_)
 
-                # Accumulate losses
                 loss = torch.tensor(0.0, device=self.device)
                 loss_class_batch = torch.tensor(0.0, device=self.device)
                 loss_bbox_batch = torch.tensor(0.0, device=self.device)
@@ -270,54 +270,36 @@ class DETRTrainer:
                 num_dec_layers = class_preds.shape[1]
 
                 for i in range(num_dec_layers):
-                    o_bbox = bbox_preds[:, i, :, :].sigmoid().to(self.device)
-                    o_cl = class_preds[:, i, :, :].to(self.device)
+                    o_bbox = bbox_preds[:, i].sigmoid()
+                    o_cl = class_preds[:, i]
 
-                    for o_bbox_i, t_bbox, o_cl_i, t_cl, t_mask in zip(
+                    for o_bbox_i, t_bbox_i, o_cl_i, t_cl_i, t_mask_i in zip(
                         o_bbox, tgt_bbox, o_cl, tgt_cl, tgt_mask
                     ):
-
                         loss_class, loss_bbox, loss_giou = self.compute_loss(
-                            o_bbox_i, t_bbox, o_cl_i, t_cl, t_mask
+                            o_bbox_i, t_bbox_i, o_cl_i, t_cl_i, t_mask_i
                         )
-
                         sample_loss = 1 * loss_class + 5 * loss_bbox + 2 * loss_giou
-
                         loss += sample_loss / self.batch_size / num_dec_layers
-
-                        # Track individual losses per batch
-                        loss_class_batch += (
-                            loss_class / self.batch_size / num_dec_layers
-                        )
+                        loss_class_batch += loss_class / self.batch_size / num_dec_layers
                         loss_bbox_batch += loss_bbox / self.batch_size / num_dec_layers
                         loss_giou_batch += loss_giou / self.batch_size / num_dec_layers
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-
-                # Clip gradient norms
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                 self.optimizer.step()
-                
-                # Gather batch-level losses
-                losses = torch.cat((losses, loss.unsqueeze(0)))
-                class_losses = torch.cat((class_losses, loss_class_batch.unsqueeze(0)))
-                box_losses = torch.cat((box_losses, loss_bbox_batch.unsqueeze(0)))
-                giou_losses = torch.cat((giou_losses, loss_giou_batch.unsqueeze(0)))
 
-            # If the epoch is done check if it's time to log the training metrics...
-            # Then check if it's time to save a checkpoint..
-            print(
-                        f"Batch Loss: {loss.item():.4f}, "
-                        f"Class Loss: {loss_class_batch.item():.4f}, "
-                        f"BBox Loss: {loss_bbox_batch.item():.4f}, "
-                        f"GIoU Loss: {loss_giou_batch.item():.4f}"
-                    )
-            self.log_epoch_losses(
-                epoch=epoch,
-                losses=losses,
-                class_losses=class_losses,
-                box_losses=box_losses,
-                giou_losses=giou_losses,
-            )
-            self.save_checkpoint(epoch=epoch)
+                losses.append(loss.item())
+                class_losses.append(loss_class_batch.item())
+                box_losses.append(loss_bbox_batch.item())
+                giou_losses.append(loss_giou_batch.item())
+
+            print(f"Batch Loss: {loss.item():.4f}, Class Loss: {loss_class_batch.item():.4f}, "
+                f"BBox Loss: {loss_bbox_batch.item():.4f}, GIoU Loss: {loss_giou_batch.item():.4f}")
+
+            self.log_epoch_losses(epoch, np.array(losses), np.array(class_losses),np.array(box_losses), np.array(giou_losses))
+            self.save_checkpoint(epoch)
+
+            torch.cuda.empty_cache()
+            import gc; gc.collect()
