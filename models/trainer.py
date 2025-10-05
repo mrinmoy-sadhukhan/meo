@@ -160,11 +160,24 @@ class DETRTrainer:
         """Saves model checkpoints and training history at specified intervals."""
         if (epoch + 1) % self.save_freq == 0:
             os.makedirs(self.checkpoint_dir, exist_ok=True)
-            torch.save(
-                self.model.state_dict(),
-                f"{self.checkpoint_dir}/model_epoch{epoch+1}.pt",
-            )
+            ckpt_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch{epoch+1}.pth")
+            state = {
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+            }
+            torch.save(state, ckpt_path)
+            
+    def load_checkpoint(self, ckpt_path, load_optimizer=True):
+        """Load model, optimizer, and histories."""
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
+        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        if load_optimizer and "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        print(f"🔁 Loaded checkpoint")
+    
     def load_loss_history(self, hist_file=None, detail_hist_file=None):
         """
         Loads training loss and detailed loss history from .npy files and updates the corresponding attributes.
